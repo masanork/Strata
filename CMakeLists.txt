@@ -2947,6 +2947,9 @@ if(STRATA_LLM_JP_PROTOTYPE)
   add_executable(llm_jp_real_mmvq tests/llm_jp/real_mmvq.hip)
   target_include_directories(llm_jp_real_mmvq PRIVATE include ${_strata_gpu_include_directories})
   target_link_libraries(llm_jp_real_mmvq PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_executable(llm_jp_real_expert tests/llm_jp/real_expert.hip)
+  target_include_directories(llm_jp_real_expert PRIVATE include ${_strata_gpu_include_directories})
+  target_link_libraries(llm_jp_real_expert PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 endif()
 
 # ---- DeepSeek-V4.1 on a box with no GPU toolkit ------------------------------------------------

@@ -65,3 +65,17 @@ Remaining work: GGUF metadata and quantized tensor validation; embeddings and no
 Q/K/V and output projections; causal prefill and KV management; router and quantized expert execution
 with RAM/GPU placement; output projection and tokenizer; server protocol; per-layer and end-to-end
 logit parity against an independent reference; and real-model performance and stability testing.
+
+The opt-in `llm_jp_real_expert` test also runs one complete real expert (gate,
+up, SwiGLU, down) using Strata's grouped HIP kernels. Against independently
+dequantized weights and float activations, relative RMSE was 0.58% for layer 0
+(Q8_0 down) and 1.85% for layer 4 (Q5_0 down). Both activation quantization
+steps contribute error; this is not an end-to-end model quality measurement.
+
+```
+./build-llm-jp/llm_jp_real_expert MODEL.gguf 4 /tmp/expert.bin
+STRATA_GGUF_PY=/path/to/gguf-py python tests/llm_jp/check_real_expert.py MODEL.gguf 4 /tmp/expert.bin
+```
+
+The actual model has Q4_K gate/up in all 32 layers, and Q8_0 or Q5_0 down
+in 16 layers each; both down variants have been checked above.
