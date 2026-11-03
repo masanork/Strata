@@ -42,6 +42,25 @@ returns an error if any payload lies outside the file or uses an unknown block t
 inventory, not a full schema or checksum validation. The downloaded model's header names
 387 tensors: F32, Q4_K, Q5_0, Q6_K and Q8_0. Do not run inference on an incomplete download.
 
+Opt-in CMake targets: configure with `STRATA_HIP_GFX906=ON` and `STRATA_LLM_JP_PROTOTYPE=ON`,
+then build `llm_jp_inspect`, `llm_jp_attention_test`, `llm_jp_norm_rope_test`,
+`llm_jp_router_test`, and `llm_jp_real_mmvq`; run the first three GPU tests with
+`ctest --test-dir BUILD -R '^llm_jp_' --output-on-failure`.
+
+The real-weight smoke test runs 32 rows of a Q4_K tensor through Strata's native MMVQ on the GPU,
+then compares against gguf-py's dequantization with the original float input. It accepts a verified
+GGUF and an explicit tensor name; the GPU input is Q8_1, so expect bounded numerical error.
+
+```bash
+BUILD/llm_jp_real_mmvq MODEL.gguf blk.0.ffn_gate_exps.weight /tmp/gpu.bin
+STRATA_GGUF_PY=/path/to/gguf-py python tests/llm_jp/check_real_mmvq.py \
+  MODEL.gguf blk.0.ffn_gate_exps.weight /tmp/gpu.bin
+```
+
+On the Radeon VII, Q, gate and up (first expert, first 32 rows each) gave relative RMSE 0.00345,
+0.00322 and 0.00200, respectively. This is a single synthetic input and is not a layer or
+whole-model correctness check.
+
 Remaining work: GGUF metadata and quantized tensor validation; embeddings and normalization; RoPE integration;
 Q/K/V and output projections; causal prefill and KV management; router and quantized expert execution
 with RAM/GPU placement; output projection and tokenizer; server protocol; per-layer and end-to-end
