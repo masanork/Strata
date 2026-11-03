@@ -1,5 +1,6 @@
 """HTTP contract tests using a fake engine; no model, GPU or network required."""
 import importlib.util
+import http.client
 import json
 import pathlib
 import socket
@@ -117,6 +118,22 @@ class HTTPTests(unittest.TestCase):
         finally:
             sock.close()
             engine.write_text(original)
+
+    def test_stale_worker_and_unread_post_body(self):
+        with urllib.request.urlopen(self.base + '/sw.js', timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn(b'registration.unregister()', response.read())
+            self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        conn.request('POST', '/tools', body='{"tool":"unsupported"}', headers={'Content-Type':'application/json'})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 404)
+        response.read()
+        conn.request('GET', '/health')
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.read())['status'], 'ok')
+        conn.close()
 
     def test_invalid_and_busy_requests(self):
         body = self.payload()

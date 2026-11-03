@@ -108,6 +108,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
+        if self.close_connection:
+            self.send_header('Connection', 'close')
         self.end_headers()
         self.wfile.write(body)
 
@@ -120,10 +122,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {'status': 'ok', 'model': MODEL, 'busy': self.app.lock.locked(), 'engine': 'strata-llm-jp', 'context_limit': self.app.max_context})
         if path == '/v1/models':
             return self.send_json(200, {'object': 'list', 'data': [{'id': MODEL, 'object': 'model', 'created': 0, 'owned_by': 'llm-jp'}]})
-        if path == '/':
+        if path in ('/', '/chat'):
             body = (pathlib.Path(__file__).with_name('chat.html')).read_bytes()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == '/sw.js':
+            # Retire a worker left by an older server that used this origin.
+            # Existing cache entries and conversations are not deleted.
+            body = ("self.addEventListener('install', () => self.skipWaiting());\n"
+                    "self.addEventListener('activate', e => e.waitUntil(self.registration.unregister()));\n").encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/javascript; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -132,10 +147,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if urlsplit(self.path).path != '/v1/chat/completions':
+            self.close_connection = True  # body remains unread; do not reuse this connection
             return self.error_json(404, 'Not found.')
         try:
             length = int(self.headers.get('Content-Length', '0'))
             if length < 1 or length > MAX_BODY:
+                self.close_connection = True  # body is absent or intentionally not read
                 raise RequestError('Request body is missing or too large.')
             try:
                 payload = json.loads(self.rfile.read(length))

@@ -236,7 +236,11 @@ python src/llm_jp/server.py --engine ./build-llm-jp/llm_jp_token_probe \
   --model MODEL.gguf --tokenizer-dir TOKENIZER_DIR --port 8082
 ```
 
-Open `http://127.0.0.1:8082/`. The server binds only to localhost, supports one
+Open `http://localhost:8082/`. If another application previously used this
+port, a stale service worker on the `127.0.0.1` origin can serve its old UI;
+`localhost` is a separate browser origin. The server serves an unregistering
+worker at `/sw.js` so that an old registration can retire when updated; it does
+not delete cached data. The server binds only to localhost, supports one
 request at a time, rejects a second request with HTTP 429, and starts a new
 native decoder for each request. Conversation history is supplied by the
 client and the full prompt is reprocessed for each turn. The default context
