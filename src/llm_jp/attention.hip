@@ -7,10 +7,19 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <cstdio>
+#include <cstdlib>
 namespace strata::llm_jp {
 namespace {
 void check(hipError_t e){if(e!=hipSuccess)throw std::runtime_error(hipGetErrorString(e));}
 template<class T> void alloc(T** p,size_t n){check(hipMalloc(reinterpret_cast<void**>(p),n));}
+void trace(const char* name,int layer,int position,const float* data,size_t count,hipStream_t stream) {
+    const char* dir=std::getenv("STRATA_LLMJP_TRACE_DIR");if(!dir)return;
+    std::vector<float> row(count);check(hipMemcpyAsync(row.data(),data,count*sizeof(float),hipMemcpyDeviceToHost,stream));check(hipStreamSynchronize(stream));
+    auto path=std::string(dir)+"/"+std::to_string(position)+"_"+std::to_string(layer)+"_"+name+".bin";
+    FILE* f=std::fopen(path.c_str(),"wb");if(!f)throw std::runtime_error("cannot open trace: "+path);
+    auto n=std::fwrite(row.data(),sizeof(float),count,f);std::fclose(f);if(n!=count)throw std::runtime_error("cannot write trace: "+path);
+}
 const TensorInfo& tensor(const GgufFile& file,int layer,const char* name,int in,int out,bool gamma=false) {
     const std::string key="blk."+std::to_string(layer)+"."+name+".weight";
     auto* t=file.find(key);
@@ -57,6 +66,7 @@ void Attention::run(int layer,int position,const float* input,float* output,hipS
             kernels::native_mmvq(t.type,weight_,xq_,target,in,out,1,stream);
         };
         project("attn_q",2560,5120,q_); project("attn_k",2560,512,k_); project("attn_v",2560,512,v_);
+        trace("Qraw",layer,position,q_,5120,stream);trace("Kraw",layer,position,k_,512,stream);trace("Vcur",layer,position,v_,512,stream);
         auto& qg=tensor(file_,layer,"attn_q_norm",128,0,true); auto& kg=tensor(file_,layer,"attn_k_norm",128,0,true);
         check(hipMemcpyAsync(qgamma_,file_.tensor_data(qg),128*4,hipMemcpyHostToDevice,stream));
         check(hipMemcpyAsync(kgamma_,file_.tensor_data(kg),128*4,hipMemcpyHostToDevice,stream));
@@ -64,10 +74,11 @@ void Attention::run(int layer,int position,const float* input,float* output,hipS
         hipLaunchKernelGGL(norm_rope,dim3(40),dim3(128),0,stream,q_,qgamma_,qnorm_,40,128,position,1e-6f,500000.f);
         hipLaunchKernelGGL(norm_rope,dim3(4),dim3(128),0,stream,k_,kgamma_,keys_+offset,4,128,position,1e-6f,500000.f);
         check(hipMemcpyAsync(values_+offset,v_,512*4,hipMemcpyDeviceToDevice,stream));
+        trace("Qcur",layer,position,qnorm_,5120,stream);trace("Kcur",layer,position,keys_+offset,512,stream);
         hipLaunchKernelGGL(attention_decode,dim3(40),dim3(128),0,stream,qnorm_,keys_+size_t(layer)*context_*512,values_+size_t(layer)*context_*512,attn_,40,4,128,position+1,1.f/std::sqrt(128.f));
         check(hipGetLastError());
         kernels::native_quantize_q8_1(attn_,xq_,5120,1,stream);
-        project("attn_output",5120,2560,output);
+        project("attn_output",5120,2560,output);trace("attn_output",layer,position,output,2560,stream);
         check(hipStreamSynchronize(stream));
         ++next_position_[layer];
     } catch(...) { (void)hipStreamSynchronize(stream); throw; }

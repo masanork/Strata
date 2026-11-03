@@ -61,10 +61,8 @@ On the Radeon VII, Q, gate and up (first expert, first 32 rows each) gave relati
 0.00322 and 0.00200, respectively. This is a single synthetic input and is not a layer or
 whole-model correctness check.
 
-Remaining work: GGUF metadata and quantized tensor validation; embeddings and normalization; RoPE integration;
-Q/K/V and output projections; causal prefill and KV management; router and quantized expert execution
-with RAM/GPU placement; output projection and tokenizer; server protocol; per-layer and end-to-end
-logit parity against an independent reference; and real-model performance and stability testing.
+Remaining work includes stronger model and numerical validation, batched prefill, efficient
+RAM/GPU expert caching and KV attention, server integration, and performance and stability testing.
 
 The opt-in `llm_jp_real_expert` test also runs one complete real expert (gate,
 up, SwiGLU, down) using Strata's grouped HIP kernels. Against independently
@@ -132,7 +130,7 @@ from the official `llm-jp/llm-jp-4.1-32b-a3b-thinking` repository, then run:
 
 ```
 python src/llm_jp/chat.py --engine ./build-llm-jp/llm_jp_token_probe \
-  --model MODEL.gguf --tokenizer-dir TOKENIZER_DIR --max-tokens 32 --final-only 'こんにちは'
+  --model MODEL.gguf --tokenizer-dir TOKENIZER_DIR --max-tokens 128 'こんにちは'
 ```
 
 `--final-only` starts generation in the final channel; omit it to let the
@@ -147,5 +145,45 @@ candidates were 14.2286 and 14.2830 respectively. Their closeness and the
 observed routing changes suggest numerical sensitivity, but the cause has not
 been established; do not treat the prototype as numerically equivalent to
 llama.cpp. In that test the prototype generated Japanese text that did not
-properly answer the request. The token wrapper currently provides a way to
-experiment, not evidence of dependable instruction following.
+properly answer the request; the oracle also failed to give just the requested
+greeting in that forced-final test. With the unmodified official generation
+prompt, the oracle reasoned and then answered "こんにちは！". The token wrapper
+currently provides a way to experiment, not evidence of dependable instruction
+following.
+
+## Diagnosing numerical differences
+
+Setting `STRATA_LLMJP_TRACE_DIR` to an existing directory writes intermediate
+activation rows for every token and layer. Use only on diagnostic inputs: these
+files contain model activations derived from the prompt. `tests/llm_jp/llama_trace_oracle.cpp`
+is an optional reference utility linked against a separate llama.cpp build; it
+is never linked into or called by the decoder. Both accept token IDs so the
+comparison does not depend on the tokenizer. For example, after compiling that
+utility as `llama_trace_oracle` with the matching external headers and libraries:
+
+```
+mkdir -p /tmp/strata-trace /tmp/llama-trace
+STRATA_LLMJP_TRACE_DIR=/tmp/strata-trace ./build-llm-jp/llm_jp_token_probe MODEL.gguf 1 1
+./llama_trace_oracle MODEL.gguf /tmp/llama-trace 1
+STRATA_GGUF_PY=/path/to/gguf-py python tests/llm_jp/compare_q8k_projection.py \
+  MODEL.gguf /tmp/strata-trace /tmp/llama-trace
+```
+
+For the BOS token, the layer-0 input normalization matched the reference and
+its V projection differed by 1.71% relative RMSE. Against dequantized weights
+and float input, the Strata Q8_1 path had 0.78% error and the reference had
+1.79%. Emulating Q8_K activation quantization in NumPy reproduced the reference
+V projection within 2.6e-7 relative RMSE. Thus this particular discrepancy
+comes from different activation quantization (Q8_1 per 32 values vs reference
+Q8_K per 256), not evidence by itself of a faulty GPU matrix product. Different
+rounding can still alter top-8 routing and subsequent generation; this single
+projection comparison does not establish that all remaining differences are
+explained or that either end-to-end response is better.
+
+With the unmodified official chat template, the Q4_K_M model answered
+“こんにちは！” to “こんにちは。短く挨拶して。” on the experimental GPU decoder.
+The independent reference gave the same final answer; the generated token
+sequences diverged during analysis. The test took 61 generated tokens in the
+prototype, so short generation limits can stop before a final answer.
+`--show-analysis` displays all generated channels and special tokens; by
+default the wrapper prints only the final channel.

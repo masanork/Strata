@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <exception>
 #include <stdexcept>
+#include <string>
 #include <vector>
 namespace {
 void check(hipError_t e){if(e!=hipSuccess)throw std::runtime_error(hipGetErrorString(e));}
@@ -34,10 +35,20 @@ int main(int argc,char** argv){
   strata::llm_jp::ExpertStore store(file);if(ids.size()+count>65536)throw std::invalid_argument("context exceeds model limit");
   const size_t prompt_size=ids.size();strata::llm_jp::Layer layer(file,store,ids.size()+count);hipStream_t stream;check(hipStreamCreate(&stream));
   float *state,*next,*gamma,*normed,*logits;void *w,*xq;check(hipMalloc(&state,H*4));check(hipMalloc(&next,H*4));check(hipMalloc(&gamma,H*4));check(hipMalloc(&normed,H*4));check(hipMalloc(&logits,chunk*4));check(hipMalloc(&w,chunk*orow));check(hipMalloc(&xq,strata::kernels::native_q8_1_bytes(H)));
-  std::vector<float> host(chunk);
+  const char* trace=std::getenv("STRATA_LLMJP_TRACE_DIR");
+  std::vector<float> host(chunk),trace_row(H);
   for(size_t pos=0;pos<ids.size();pos++){
    check(hipMemcpyAsync(w,file.tensor_data(emb)+ids[pos]*row,row,hipMemcpyHostToDevice,stream));strata::kernels::dequant_f32(12,w,0,1,H,state,stream);
-   for(int l=0;l<32;l++){layer.run(l,pos,state,next,stream);std::swap(state,next);}
+   for(int l=0;l<32;l++){
+    layer.run(l,pos,state,next,stream);std::swap(state,next);
+    if(trace){
+     check(hipMemcpy(trace_row.data(),state,H*4,hipMemcpyDeviceToHost));
+     auto path=std::string(trace)+"/"+std::to_string(pos)+"_"+std::to_string(l)+".bin";
+     FILE* f=std::fopen(path.c_str(),"wb");if(!f)throw std::runtime_error("cannot open trace: "+path);
+     auto written=std::fwrite(trace_row.data(),sizeof(float),H,f);std::fclose(f);
+     if(written!=H)throw std::runtime_error("cannot write trace: "+path);
+    }
+   }
    if(pos+1<prompt_size){
     if((pos+1)%16==0)std::fprintf(stderr,"prompt %zu/%zu tokens\n",pos+1,prompt_size);
     continue;
