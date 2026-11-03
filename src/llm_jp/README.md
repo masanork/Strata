@@ -73,9 +73,15 @@ dequantized weights and float activations, relative RMSE was 0.58% for layer 0
 steps contribute error; this is not an end-to-end model quality measurement.
 
 ```
-./build-llm-jp/llm_jp_real_expert MODEL.gguf 4 /tmp/expert.bin
-STRATA_GGUF_PY=/path/to/gguf-py python tests/llm_jp/check_real_expert.py MODEL.gguf 4 /tmp/expert.bin
+./build-llm-jp/llm_jp_real_expert MODEL.gguf 4 0 /tmp/expert.bin
+STRATA_GGUF_PY=/path/to/gguf-py python tests/llm_jp/check_real_expert.py MODEL.gguf 4 0 /tmp/expert.bin
 ```
 
 The actual model has Q4_K gate/up in all 32 layers, and Q8_0 or Q5_0 down
 in 16 layers each; both down variants have been checked above.
+
+`expert_store.hpp` validates all 32 layer layouts and exposes per-expert views
+into the GGUF mapping without copying the whole model. The mapping must stay
+alive until GPU transfers complete. Layer 4 expert 127 was independently checked
+against the CPU reference (relative RMSE 2.12%), exercising the final expert's
+offset as well as the Q5_0 path.
