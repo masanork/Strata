@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <stdexcept>
 #include <vector>
 #define CHECK(x) do { auto e=(x); if(e!=hipSuccess){std::fprintf(stderr,"%s: %s\n",#x,hipGetErrorString(e));return 2;} } while(0)
 int main(int argc,char** argv){
@@ -13,6 +14,8 @@ int main(int argc,char** argv){
   strata::GgufFile file(argv[1]);strata::llm_jp::Attention attention(file,2);
   std::vector<float> x(2560),y(5120);float *dx,*dy;hipStream_t s;
   CHECK(hipStreamCreate(&s));CHECK(hipMalloc(&dx,2560*4));CHECK(hipMalloc(&dy,2560*4));
+  bool rejected=false;try{attention.run(layer,1,dx,dy,s);}catch(const std::invalid_argument&){rejected=true;}
+  if(!rejected){std::fprintf(stderr,"out-of-order position was accepted\n");return 5;}
   for(int pos=0;pos<2;pos++){
    for(int i=0;i<2560;i++)x[i]=std::sin(float(i)*.013f+float(pos)*.31f)*.1f;
    CHECK(hipMemcpy(dx,x.data(),2560*4,hipMemcpyHostToDevice));attention.run(layer,pos,dx,dy,s);

@@ -132,5 +132,20 @@ from the official `llm-jp/llm-jp-4.1-32b-a3b-thinking` repository, then run:
 
 ```
 python src/llm_jp/chat.py --engine ./build-llm-jp/llm_jp_token_probe \
-  --model MODEL.gguf --tokenizer-dir TOKENIZER_DIR --max-tokens 32 'こんにちは'
+  --model MODEL.gguf --tokenizer-dir TOKENIZER_DIR --max-tokens 32 --final-only 'こんにちは'
 ```
+
+`--final-only` starts generation in the final channel; omit it to let the
+thinking model choose its own analysis/final channel. The wrapper currently
+has no conversation history, tool calling, streaming API, or sampling controls.
+
+A longer test exposed a correctness/quality limitation: with the official chat
+template, a Japanese greeting prompt and forced final channel, the first output
+ID (`609`) matched the local llama.cpp oracle, while the second was `5371`
+in this prototype versus `118157` in the oracle. The oracle logits for those
+candidates were 14.2286 and 14.2830 respectively. Their closeness and the
+observed routing changes suggest numerical sensitivity, but the cause has not
+been established; do not treat the prototype as numerically equivalent to
+llama.cpp. In that test the prototype generated Japanese text that did not
+properly answer the request. The token wrapper currently provides a way to
+experiment, not evidence of dependable instruction following.

@@ -13,6 +13,7 @@ parser.add_argument('--engine', required=True, help='llm_jp_token_probe executab
 parser.add_argument('--model', required=True, help='LLM-jp GGUF')
 parser.add_argument('--tokenizer-dir', required=True, help='official tokenizer.json and chat_template.jinja')
 parser.add_argument('--max-tokens', type=int, default=32)
+parser.add_argument('--final-only', action='store_true', help='start directly in the final channel')
 parser.add_argument('prompt')
 a = parser.parse_args()
 path = pathlib.Path(a.tokenizer_dir)
@@ -20,6 +21,8 @@ tok = Tokenizer.from_file(str(path / 'tokenizer.json'))
 template = Environment().from_string((path / 'chat_template.jinja').read_text())
 text = template.render(messages=[{'role':'user','content':a.prompt}], add_generation_prompt=True,
                        conversation_start_date=datetime.date.today().isoformat())
+if a.final_only:
+    text += "<|channel|>final<|message|>"
 ids = [1] + tok.encode(text, add_special_tokens=False).ids
 print(f'prompt: {len(ids)} tokens; generating up to {a.max_tokens} tokens', file=sys.stderr, flush=True)
 proc = subprocess.Popen([a.engine, a.model, str(a.max_tokens), *map(str, ids)], stdout=subprocess.PIPE, text=True)

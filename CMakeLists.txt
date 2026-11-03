@@ -2926,7 +2926,7 @@ if(STRATA_HIP_GFX906)
   target_link_libraries(gfx906_qsa_query_swizzle_probe PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 endif()
 
-option(STRATA_LLM_JP_PROTOTYPE "Build experimental gfx906 LLM-jp kernel checks" OFF)
+option(STRATA_LLM_JP_PROTOTYPE "Build experimental gfx906 LLM-jp decoder and checks" OFF)
 if(STRATA_LLM_JP_PROTOTYPE)
   if(NOT STRATA_HIP_GFX906)
     message(FATAL_ERROR "STRATA_LLM_JP_PROTOTYPE currently requires STRATA_HIP_GFX906")
