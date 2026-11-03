@@ -221,3 +221,35 @@ amplify small differences: in one 32-token greedy test, the first 25 generated
 IDs matched and later IDs differed. The natural Japanese greeting test still
 returned “こんにちは！” with the optimized path. This is a small smoke test,
 not proof of equivalent generation quality or long-context correctness.
+
+## Experimental local HTTP chat
+
+`server.py` provides a browser chat at `/`, `GET /health`, `GET /v1/models`,
+and OpenAI-style `POST /v1/chat/completions` with streaming and non-streaming
+responses. It renders the official chat template from the supplied message
+history and exposes the final channel. The model's thinking tokens count toward
+`max_tokens`, so short limits can end without a visible final answer. While
+prefill and thinking run, streaming responses send SSE keepalives.
+
+```
+python src/llm_jp/server.py --engine ./build-llm-jp/llm_jp_token_probe \
+  --model MODEL.gguf --tokenizer-dir TOKENIZER_DIR --port 8082
+```
+
+Open `http://127.0.0.1:8082/`. The server binds only to localhost, supports one
+request at a time, rejects a second request with HTTP 429, and starts a new
+native decoder for each request. Conversation history is supplied by the
+client and the full prompt is reprocessed for each turn. The default context
+limit is 1024 tokens including `max_tokens`; `--max-context` changes that
+limit, but the F32 KV cache consumes roughly 128 KiB of VRAM per token in
+addition to the other GPU allocations. There is no authentication or TLS.
+
+The only supported sampling mode is greedy (`temperature: 0` or omitted).
+Tool/function calls, image inputs, structured output and alternative sampling
+parameters are rejected; this is not yet an OpenCode-capable tool-calling
+server. The browser keeps history only while the page is open. Stopping a
+stream disconnects the client and the server terminates its decoder after a
+disconnect is detected. Python dependencies are `tokenizers` and `jinja2`.
+
+Run the HTTP contract tests with `python tests/llm_jp/server_test.py`; they use
+a fake decoder and do not require a GPU or model weights.
