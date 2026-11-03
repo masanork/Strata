@@ -75,7 +75,10 @@ void Attention::run(int layer,int position,const float* input,float* output,hipS
         hipLaunchKernelGGL(norm_rope,dim3(4),dim3(128),0,stream,k_,kgamma_,keys_+offset,4,128,position,1e-6f,500000.f);
         check(hipMemcpyAsync(values_+offset,v_,512*4,hipMemcpyDeviceToDevice,stream));
         trace("Qcur",layer,position,qnorm_,5120,stream);trace("Kcur",layer,position,keys_+offset,512,stream);
-        hipLaunchKernelGGL(attention_decode,dim3(40),dim3(128),0,stream,qnorm_,keys_+size_t(layer)*context_*512,values_+size_t(layer)*context_*512,attn_,40,4,128,position+1,1.f/std::sqrt(128.f));
+        if(std::getenv("STRATA_LLMJP_REFERENCE_ATTN"))
+            hipLaunchKernelGGL(attention_decode_reference,dim3(40),dim3(128),0,stream,qnorm_,keys_+size_t(layer)*context_*512,values_+size_t(layer)*context_*512,attn_,40,4,128,position+1,1.f/std::sqrt(128.f));
+        else
+            hipLaunchKernelGGL(attention_decode,dim3(40),dim3(128),0,stream,qnorm_,keys_+size_t(layer)*context_*512,values_+size_t(layer)*context_*512,attn_,40,4,128,position+1,1.f/std::sqrt(128.f));
         check(hipGetLastError());
         kernels::native_quantize_q8_1(attn_,xq_,5120,1,stream);
         project("attn_output",5120,2560,output);trace("attn_output",layer,position,output,2560,stream);

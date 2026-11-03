@@ -108,7 +108,7 @@ binary: it is **not yet** wired into the Strata HTTP server. The current code
 streams weights from the GGUF and synchronizes often, so it prioritizes a
 verifiable baseline over speed. KV cache uses F32 and requires about 128 KiB
 per context token across the model; the attention kernel is not optimized for
-long contexts. Restart the process for a new sequence.
+long contexts despite the later optimized attention kernel. Restart the process for a new sequence.
 
 The official Q4_K_M GGUF on gfx906 produced IDs `98335 642 11938` from input
 `1`, matching three independently evaluated greedy next-token IDs from a local
@@ -187,3 +187,37 @@ sequences diverged during analysis. The test took 61 generated tokens in the
 prototype, so short generation limits can stop before a final answer.
 `--show-analysis` displays all generated channels and special tokens; by
 default the wrapper prints only the final channel.
+
+## Performance experiment
+
+The default MoE path uses approximately 41 MiB of pinned host staging memory
+and issues one asynchronous copy per selected expert, allowing host copies and
+GPU transfers to overlap. If the allocation fails it falls back to pageable
+transfers. Set `STRATA_LLMJP_PINNED=0` to force the original path; `bulk` tests
+a single large transfer. It does not reserve additional persistent VRAM.
+A 128 MiB LRU VRAM-cache experiment produced no hits when traversing all 32
+layers in order and was therefore not retained.
+
+Attention uses a wave-size-independent block reduction with online softmax,
+computing each query/key dot product once rather than once per output element.
+`STRATA_LLMJP_REFERENCE_ATTN=1` selects the original reference kernel for
+comparison. With synthetic 40-query-head / 4-KV-head inputs on the Radeon VII,
+`llm_jp_attention_perf` measured the original versus optimized kernels at
+3.73 ms vs 0.40 ms (256 cached positions), and 15.02 ms vs 1.78 ms (1024).
+Maximum output absolute error was below 3e-7 in those tests. These are kernel
+measurements, not end-to-end generation throughput; results vary with load.
+
+On the shared machine with the Qwen server running, two alternating-order
+runs processing the same 32 input IDs and generating one token took 10.34–11.20 s
+with the original transfer and attention paths and 8.33–10.90 s with both
+optimizations. These are small, cache-sensitive experiments including startup,
+not a general throughput claim. `STRATA_LLMJP_PROFILE=1` prints aggregate
+phase times; staging enqueue and GPU completion times reflect asynchronous
+execution rather than independent, non-overlapping hardware measurements.
+
+The new attention changes floating-point reduction order. Both kernels match
+an independent reference for the tested attention inputs, but MoE routing can
+amplify small differences: in one 32-token greedy test, the first 25 generated
+IDs matched and later IDs differed. The natural Japanese greeting test still
+returned “こんにちは！” with the optimized path. This is a small smoke test,
+not proof of equivalent generation quality or long-context correctness.

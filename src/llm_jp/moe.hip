@@ -1,9 +1,12 @@
 #include "moe.hpp"
+#include "profile.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_router.hpp"
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <cstring>
+#include <cstdlib>
 
 namespace strata::llm_jp {
 namespace {
@@ -35,7 +38,16 @@ Moe::Moe(const GgufFile& file,const ExpertStore& store):file_(file),store_(store
             const auto payload=file.file_size()-file.data_start();
             if(t->offset>payload||bytes>payload-t->offset) throw std::runtime_error("router outside GGUF: "+name);
         }
-        alloc(&blobs_,8*max_bytes); alloc(&xq_,(ExpertStore::hidden/32)*36);
+        alloc(&blobs_,8*max_bytes);
+        const char* mode=std::getenv("STRATA_LLMJP_PINNED");
+        if(!mode || std::strcmp(mode,"0")!=0) {
+            split_copy_=!mode || std::strcmp(mode,"bulk")!=0;
+            if(hipHostMalloc(&staging_,8*max_bytes,hipHostMallocDefault)!=hipSuccess) {
+                staging_=nullptr;
+                std::fprintf(stderr,"LLM-jp: pinned staging unavailable; using pageable transfers\n");
+            }
+        }
+        alloc(&xq_,(ExpertStore::hidden/32)*36);
         alloc(&scratch_,kernels::native_expert_scratch_bytes(8,ExpertStore::intermediate));
         alloc(&router_,ExpertStore::hidden*ExpertStore::experts*sizeof(float)); alloc(&logits_,128*sizeof(float));
         alloc(&weights_dev_,8*sizeof(float)); alloc(&parts_,8*ExpertStore::hidden*sizeof(float));
@@ -44,6 +56,7 @@ Moe::Moe(const GgufFile& file,const ExpertStore& store):file_(file),store_(store
     } catch(...) { release(); throw; }
 }
 void Moe::release() noexcept {
+    if(staging_) (void)hipHostFree(staging_);
     (void)hipFree(blobs_); (void)hipFree(xq_); (void)hipFree(scratch_); (void)hipFree(router_); (void)hipFree(logits_); (void)hipFree(weights_dev_);
     (void)hipFree(parts_); (void)hipFree(ids_dev_); (void)hipFree(start_); (void)hipFree(groups_); (void)hipFree(dst_); (void)hipFree(tok_); (void)hipFree(ptr_);
 }
@@ -52,6 +65,7 @@ void Moe::run(int layer,const float* input,float* output,hipStream_t stream) {
     if(!input || !output || !stream) throw std::invalid_argument("MoE requires device input/output and stream");
     unsigned long long ptr[8]; int32_t start[9],dst[8],tok[8],groups=8;
     try {
+    auto t0=ProfileClock::now();
     const auto& l=store_.layer(layer); const auto& L=l.layout;
     auto* router=file_.find("blk."+std::to_string(layer)+".ffn_gate_inp.weight");
     check(hipMemcpyAsync(router_,file_.tensor_data(*router),128*2560*sizeof(float),hipMemcpyHostToDevice,stream));
@@ -61,13 +75,23 @@ void Moe::run(int layer,const float* input,float* output,hipStream_t stream) {
     check(hipMemcpyAsync(ids_,ids_dev_,sizeof(ids_),hipMemcpyDeviceToHost,stream));
     check(hipMemcpyAsync(weights_,weights_dev_,sizeof(weights_),hipMemcpyDeviceToHost,stream));
     check(hipStreamSynchronize(stream));
+    auto t1=ProfileClock::now();
     for(int i=0;i<8;i++) {
-        auto slice=store_.expert(layer,ids_[i]); auto* blob=static_cast<uint8_t*>(blobs_)+i*L.bytes;
-        check(hipMemcpyAsync(blob,slice.gate,L.up_off,hipMemcpyHostToDevice,stream));
-        check(hipMemcpyAsync(blob+L.up_off,slice.up,L.up_off,hipMemcpyHostToDevice,stream));
-        check(hipMemcpyAsync(blob+L.down_off,slice.down,L.bytes-L.down_off,hipMemcpyHostToDevice,stream));
-        ptr[i]=reinterpret_cast<unsigned long long>(blob); start[i]=i; dst[i]=i; tok[i]=0;
+        auto slice=store_.expert(layer,ids_[i]);auto* blob=static_cast<uint8_t*>(blobs_)+i*L.bytes;
+        if(staging_) {
+            auto* host=static_cast<uint8_t*>(staging_)+i*L.bytes;
+            std::memcpy(host,slice.gate,L.up_off);std::memcpy(host+L.up_off,slice.up,L.up_off);
+            std::memcpy(host+L.down_off,slice.down,L.bytes-L.down_off);
+            if(split_copy_)check(hipMemcpyAsync(blob,host,L.bytes,hipMemcpyHostToDevice,stream));
+        } else {
+            check(hipMemcpyAsync(blob,slice.gate,L.up_off,hipMemcpyHostToDevice,stream));
+            check(hipMemcpyAsync(blob+L.up_off,slice.up,L.up_off,hipMemcpyHostToDevice,stream));
+            check(hipMemcpyAsync(blob+L.down_off,slice.down,L.bytes-L.down_off,hipMemcpyHostToDevice,stream));
+        }
+        ptr[i]=reinterpret_cast<unsigned long long>(blob);start[i]=i;dst[i]=i;tok[i]=0;
     }
+    if(staging_&&!split_copy_)check(hipMemcpyAsync(blobs_,staging_,8*L.bytes,hipMemcpyHostToDevice,stream));
+    auto t2=ProfileClock::now();
     start[8]=8;
     check(hipMemcpyAsync(ptr_,ptr,sizeof(ptr),hipMemcpyHostToDevice,stream));
     check(hipMemcpyAsync(start_,start,sizeof(start),hipMemcpyHostToDevice,stream));
@@ -78,6 +102,7 @@ void Moe::run(int layer,const float* input,float* output,hipStream_t stream) {
     kernels::native_expert_grouped(L,ptr_,start_,groups_,dst_,tok_,8,8,xq_,scratch_,parts_,stream);
     kernels::native_moe_combine(parts_,weights_dev_,nullptr,output,2560,8,stream);
     check(hipStreamSynchronize(stream));
+    if(profile.enabled){profile.route+=std::chrono::duration<double,std::milli>(t1-t0).count();profile.stage+=std::chrono::duration<double,std::milli>(t2-t1).count();profile.expert+=Profile::elapsed(t2);}
     } catch (...) {
         // Complete outstanding transfers before local descriptors leave scope.
         (void)hipStreamSynchronize(stream);

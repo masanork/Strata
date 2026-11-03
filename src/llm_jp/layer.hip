@@ -1,4 +1,5 @@
 #include "layer.hpp"
+#include "profile.hpp"
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -42,10 +43,18 @@ void Layer::run(int layer,int position,const float* input,float* output,hipStrea
     if(layer<0||layer>=32||!input||!output||!stream)throw std::invalid_argument("invalid layer input");
     try {
         auto normalize=[&](const char* name,const float* x){auto& t=norm_tensor(file_,layer,name);check(hipMemcpyAsync(gamma_,file_.tensor_data(t),2560*4,hipMemcpyHostToDevice,stream));hipLaunchKernelGGL(rms,dim3(1),dim3(256),0,stream,x,gamma_,norm_);check(hipGetLastError());};
-        normalize("attn_norm",input);trace_row("attn_norm",layer,position,norm_,stream);attention_.run(layer,position,norm_,part_,stream);
+        auto t0=ProfileClock::now();
+        normalize("attn_norm",input);trace_row("attn_norm",layer,position,norm_,stream);auto t1=ProfileClock::now();attention_.run(layer,position,norm_,part_,stream);
+        auto t2=ProfileClock::now();
         hipLaunchKernelGGL(add,dim3(10),dim3(256),0,stream,input,part_,residual_);check(hipGetLastError());
-        trace_row("ffn_inp",layer,position,residual_,stream);normalize("ffn_norm",residual_);trace_row("ffn_norm",layer,position,norm_,stream);moe_.run(layer,norm_,part_,stream);trace_row("ffn_moe_out",layer,position,part_,stream);
+        trace_row("ffn_inp",layer,position,residual_,stream);normalize("ffn_norm",residual_);trace_row("ffn_norm",layer,position,norm_,stream);auto t3=ProfileClock::now();moe_.run(layer,norm_,part_,stream);auto t4=ProfileClock::now();
+        if(const char* path=std::getenv("STRATA_LLMJP_ROUTE_TRACE")) {
+            FILE* f=std::fopen(path,"a");if(!f)throw std::runtime_error("cannot open route trace");
+            std::fprintf(f,"%d %d",position,layer);for(int i=0;i<8;i++)std::fprintf(f," %d",moe_.ids()[i]);std::fprintf(f,"\n");std::fclose(f);
+        }
+        trace_row("ffn_moe_out",layer,position,part_,stream);
         hipLaunchKernelGGL(add,dim3(10),dim3(256),0,stream,residual_,part_,output);check(hipGetLastError());check(hipStreamSynchronize(stream));
+        if(profile.enabled){auto t5=ProfileClock::now();profile.attention+=std::chrono::duration<double,std::milli>(t2-t1).count();profile.moe+=std::chrono::duration<double,std::milli>(t4-t3).count();profile.layer_other+=std::chrono::duration<double,std::milli>((t1-t0)+(t3-t2)+(t5-t4)).count();++profile.layers;}
     }catch(...){(void)hipStreamSynchronize(stream);throw;}
 }
 }

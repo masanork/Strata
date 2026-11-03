@@ -20,11 +20,12 @@ private:
     void release() noexcept;
     const GgufFile& file_;
     const ExpertStore& store_;
-    void *blobs_=nullptr, *xq_=nullptr, *scratch_=nullptr;
+    void *blobs_=nullptr, *xq_=nullptr, *scratch_=nullptr, *staging_=nullptr;
     float *router_=nullptr, *logits_=nullptr, *weights_dev_=nullptr, *parts_=nullptr;
     int32_t *ids_dev_=nullptr, *start_=nullptr, *groups_=nullptr, *dst_=nullptr, *tok_=nullptr;
     unsigned long long* ptr_=nullptr;
     int32_t ids_[8]{};
     float weights_[8]{};
+    bool split_copy_=false;
 };
 }

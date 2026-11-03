@@ -1,6 +1,7 @@
 // Experimental Strata-native, token-ID-only greedy decoder. No HTTP server or
 // tokenizer. Weights are streamed from GGUF for clarity, not throughput.
 #include "layer.hpp"
+#include "profile.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include <hip/hip_runtime.h>
@@ -53,16 +54,20 @@ int main(int argc,char** argv){
     if((pos+1)%16==0)std::fprintf(stderr,"prompt %zu/%zu tokens\n",pos+1,prompt_size);
     continue;
    }
+   auto head_start=strata::llm_jp::ProfileClock::now();
    check(hipMemcpyAsync(gamma,file.tensor_data(norm),H*4,hipMemcpyHostToDevice,stream));hipLaunchKernelGGL(rms_final,dim3(1),dim3(256),0,stream,state,gamma,normed);check(hipGetLastError());
    strata::kernels::native_quantize_q8_1(normed,xq,H,1,stream);
-   float best=-INFINITY;int bestid=-1;
+   float best=-INFINITY,second=-INFINITY;int bestid=-1,secondid=-1;
    for(int start=0;start<V;start+=chunk){int n=std::min(chunk,V-start);check(hipMemcpyAsync(w,file.tensor_data(head)+start*orow,n*orow,hipMemcpyHostToDevice,stream));strata::kernels::native_mmvq(8,w,xq,logits,H,n,1,stream);check(hipMemcpyAsync(host.data(),logits,n*4,hipMemcpyDeviceToHost,stream));check(hipStreamSynchronize(stream));
-    for(int i=0;i<n;i++)if(host[i]>best){best=host[i];bestid=start+i;}
+    for(int i=0;i<n;i++){float v=host[i];if(v>best){second=best;secondid=bestid;best=v;bestid=start+i;}else if(v>second){second=v;secondid=start+i;}}
    }
+   if(strata::llm_jp::profile.enabled){strata::llm_jp::profile.head+=strata::llm_jp::Profile::elapsed(head_start);++strata::llm_jp::profile.heads;}
+   if(std::getenv("STRATA_LLMJP_SHOW_TOP2"))std::fprintf(stderr,"top2 %d %.9g %d %.9g gap=%.9g\n",bestid,best,secondid,second,best-second);
    std::printf("%d\n",bestid);std::fflush(stdout);
    if(bestid==2||ids.size()-prompt_size+1>=size_t(count))break;
    ids.push_back(bestid);
   }
+  strata::llm_jp::profile.report();
   check(hipFree(state));check(hipFree(next));check(hipFree(gamma));check(hipFree(normed));check(hipFree(logits));check(hipFree(w));check(hipFree(xq));check(hipStreamDestroy(stream));
  }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}
 }
