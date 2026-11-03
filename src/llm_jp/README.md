@@ -85,3 +85,18 @@ into the GGUF mapping without copying the whole model. The mapping must stay
 alive until GPU transfers complete. Layer 4 expert 127 was independently checked
 against the CPU reference (relative RMSE 2.12%), exercising the final expert's
 offset as well as the Q5_0 path.
+
+`Moe` is a correctness-first, single-token routed FFN: it computes the F32
+router logits, selects and normalizes the top 8, copies those experts from the
+mapping, runs the grouped Strata kernels, and combines their outputs. The input
+must already be FFN-normalized; residual and attention are not included. It
+synchronizes for the host expert selection and transfers all eight experts per
+call, so it is a baseline rather than a performance-optimized engine.
+
+Against a separate NumPy/dequantized-weights reference, the chosen IDs matched
+and the output relative RMSE was 0.58% at layer 0 and 1.54% at layer 4:
+
+```
+./build-llm-jp/llm_jp_real_moe MODEL.gguf 4 /tmp/moe.bin
+STRATA_GGUF_PY=/path/to/gguf-py python tests/llm_jp/check_real_moe.py MODEL.gguf 4 /tmp/moe.bin
+```
