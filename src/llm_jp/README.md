@@ -1,6 +1,6 @@
 # LLM-jp 4.1 32B-A3B: experimental gfx906 work
 
-This is an early prototype. It does **not** load or run LLM-jp yet and is not wired into the Strata server.
+This is an early, correctness-first prototype. The token-ID decoder runs LLM-jp, but is not wired into the Strata server.
 
 The model config describes 32 layers, Qwen3-MoE, hidden width 2560, 40 query heads, 4 KV heads,
 128-dimensional heads, 128 experts, and top-8 routing. The separate Qwen3.5/3.6 engine is a
@@ -99,4 +99,38 @@ and the output relative RMSE was 0.58% at layer 0 and 1.54% at layer 4:
 ```
 ./build-llm-jp/llm_jp_real_moe MODEL.gguf 4 /tmp/moe.bin
 STRATA_GGUF_PY=/path/to/gguf-py python tests/llm_jp/check_real_moe.py MODEL.gguf 4 /tmp/moe.bin
+```
+
+## Full decoder experiment
+
+`llm_jp_token_probe` is an experimental greedy decoder that joins embedding,
+all 32 attention and MoE layers, the final norm and output projection. It takes
+and emits token IDs, supports consecutive positions, and is a separate opt-in
+binary: it is **not yet** wired into the Strata HTTP server. The current code
+streams weights from the GGUF and synchronizes often, so it prioritizes a
+verifiable baseline over speed. KV cache uses F32 and requires about 128 KiB
+per context token across the model; the attention kernel is not optimized for
+long contexts. Restart the process for a new sequence.
+
+The official Q4_K_M GGUF on gfx906 produced IDs `98335 642 11938` from input
+`1`, matching three independently evaluated greedy next-token IDs from a local
+llama.cpp build. This small smoke test is not a general numerical or quality
+validation. A layer-4 test showed activation quantization can change the
+boundary expert: for one input, the eighth selected expert differed from the
+float reference, yielding 16% whole-layer relative RMSE; conditioning the CPU
+reference on the GPU-selected IDs reduced it to about 1.1%. This is an expected
+risk of the current activation quantization and requires broader evaluation.
+
+```
+./build-llm-jp/llm_jp_token_probe MODEL.gguf 3 1
+```
+
+`chat.py` is a single-turn wrapper using the official `tokenizer.json` and
+`chat_template.jinja`; it requires Python packages `tokenizers` and `jinja2`.
+It launches the experimental decoder, not llama.cpp. Download those two files
+from the official `llm-jp/llm-jp-4.1-32b-a3b-thinking` repository, then run:
+
+```
+python src/llm_jp/chat.py --engine ./build-llm-jp/llm_jp_token_probe \
+  --model MODEL.gguf --tokenizer-dir TOKENIZER_DIR --max-tokens 32 'こんにちは'
 ```
